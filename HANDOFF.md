@@ -15,16 +15,16 @@
 | `/api/orders` | 200 | DB エラー時フォールバックデータ返却 |
 | `/api/knowledge` | 200 | 空配列（DB に行なし） |
 | `/api/materials` | 200 | **空配列スタブ**（下記 #2 参照） |
-| `/api/gold-price` | 200 | **fallback 値 ¥14,820**（下記 #1 参照） |
+| `/api/gold-price` | 200 | Gemini + googleSearch 経由で実価格取得 ✅ |
 | `/api/cron/archive-sessions` | 200 | `{"ok":true,"archived":0,"thresholdDays":90}` |
 | 画面 UI ナビゲーション全般 | — | Next.js dev 起動 (Turbopack, http://localhost:3000) |
 
 ### 移動後に必ず対応する未解決事項
 
-1. **`/api/gold-price`**: Gemini googleSearch が動かず fallback 値返却。
-   - 原因候補: Gemini 2.5 + googleSearch の仕様 / リージョン制限 / billing 要件
-   - 環境変数名は `GOOGLE_GENERATIVE_AI_API_KEY` に統一済み（API キー自体は raw curl で疎通確認済み）
-   - 次の debug ステップ: ルート内で `console.log` を仕込み、`res.ok`・`data.candidates`・regex match を順に確認
+1. ~~**`/api/gold-price`**: Gemini googleSearch が動かず fallback 値返却。~~ **解決済み（2026-04-22）**
+   - 環境変数名を `GEMINI_API_KEY` → `GOOGLE_GENERATIVE_AI_API_KEY` に統一したことで動作開始。
+   - 実測: `{"price":27132,"source":"gemini"}` 等を返却、Gemini 2.5 + googleSearch 経由で金価格取得中。
+   - 先の「fallback に落ちていた」観測は transient な Turbopack/モジュール初期化タイミングが原因と推定。
 
 2. **`/api/materials`**: DB の `mekki_room1.alternative_materials` テーブルと UI が期待するカラムが完全に別設計。
    - DB 実体: `id, user_id, session_id, material_name, properties, cost_comparison, use_cases, source_urls, ai_summary, notes, created_at, updated_at`
