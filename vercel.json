@@ -1,5 +1,6 @@
 {
   "crons": [
-    { "path": "/api/cron/archive-sessions", "schedule": "0 3 * * *" }
+    { "path": "/api/cron/archive-sessions", "schedule": "0 3 * * *" },
+    { "path": "/api/cron/update-gold-price", "schedule": "*/15 * * * *" }
   ]
 }
