@@ -17,6 +17,8 @@
 | `/api/materials` | 200 | **空配列スタブ**（下記 #2 参照） |
 | `/api/gold-price` | 200 | Gemini + googleSearch 経由で実価格取得 ✅ |
 | `/api/cron/archive-sessions` | 200 | `{"ok":true,"archived":0,"thresholdDays":90}` |
+| `/api/cron/update-gold-price` | 200 | `{"ok":true,"price":27299,"source":"gemini"}` — 15 分毎に `mekki_room1.gold_prices` にログ追加 |
+| `/api/settings` GET/POST | 200 | `mekki_shared.app_settings` 経由、`DEFAULT_PROMPTS` をデフォルト値として merge |
 | 画面 UI ナビゲーション全般 | — | Next.js dev 起動 (Turbopack, http://localhost:3000) |
 
 ### 移動後に必ず対応する未解決事項
@@ -30,28 +32,38 @@
    - DB 実体: `id, user_id, session_id, material_name, properties, cost_comparison, use_cases, source_urls, ai_summary, notes, created_at, updated_at`
    - UI 期待: `name, cost_reduction, is_recommended, sort_order`
    - 参照箇所: `src/components/screens/Settings.tsx`, `src/components/panels/TechPanel.tsx`, `src/components/panels/StrategyPanel.tsx`
-   - 現状は GET で空配列返却のスタブ化
-   - 対応方針: UI 側を新 DB 設計に合わせて書き直す or DB 側に View を追加して UI 期待値にマップする
+   - 現状は GET で空配列返却のスタブ化（コミット `06777da`）
 
-3. **Phase 2 (settings 書き直し) 未着手**
-   - DB 調査結果: `mekki_shared.app_settings` のみ存在、列は `id, user_id, setting_key, setting_value, updated_at`
-   - 旧 `settings(key, value)` テーブルは存在しない
-   - 方針: 新 helper `getSetting/setSetting` に統一、旧構造サポートは削除
+   **再設計 3 案（次回要決定）**:
+   - **A（推奨）**: `Settings > 材料マスタ管理` タブを廃止。代わりに Room 1 側に「この会話で出た AI 生成代替材料提案一覧」パネルを新設。DB の新設計（session_id / ai_summary / source_urls）は AI が session 単位で生成する代替材料候補を格納する意図と解釈
+   - **B**: 新テーブル `mekki_room1.material_masters`（または `mekki_shared`）を migration 追加して UI を向かせる。§5 の番号ルール `mekki_13_` から採番必須
+   - **C**: PostgreSQL View で列マッピング。ただし `is_recommended` に対応する DB カラムなし、部分実装となる
+
+3. ~~**Phase 2 (settings 書き直し) 未着手**~~ **完了（2026-04-22 コミット `c2324a6`）**
+   - `mekki_shared.app_settings` 経由で動作確認済み（POST で temperature 書換 → GET で反映を確認）
+   - 旧 `isSupabaseConfigured` 分岐と `DEFAULT_PROMPTS` 書換は dead code として削除
 
 4. **Phase 3 (chat 3 本: strategy/sales/tech) 未着手**
    - 着手前に UI 設計確認必須：session_id のフロント ↔ API 授受方法、UI 修正範囲
    - 現状 AI 呼び出しは全メッセージ履歴送信（料金爆発リスク）→ `getContextForAI()` 必須化が目的
 
-### Phase 1 で完了した内容（コミット `88f393b`）
+   **既存コード調査結果**: `src/hooks/useChat.ts` は既に `conversationId` を保持・伝達する実装。初期化時に `/api/conversations?room={room}` から最新会話取得、各 POST で `{ messages, conversationId }` 送信、レスポンスの `conversationId` で更新。Phase 3 ではこの仕組みを活かせる。
 
-旧 `@/lib/supabase-server` の `supabaseSchema("shared|room1|dashboard")` を新 `@/lib/supabase/server` の `createServerClient("mekki_*")` に置換:
-- `src/app/api/gold-price/route.ts`
-- `src/app/api/materials/route.ts`
-- `src/app/api/knowledge/route.ts`
-- `src/app/api/knowledge/upload/route.ts`
-- `src/app/api/orders/route.ts`
+   **次回着手時の推奨順序**:
+   1. `/api/conversations/route.ts` の実装を読み、`conversationId` が `mekki_shared.chat_sessions.id` を指しているか、独自 ID かを確認
+   2. `useChat` の POST body を `{ content, sessionId }` に変更（履歴は UI 表示用のみ保持、サーバー送信は停止）
+   3. `/api/chat/strategy|sales|tech` を書き直し: `createSession`（無ければ）→ `saveMessage(user)` → `getContextForAI(sessionId)` → AI 呼び出し → `saveMessage(assistant)` → `{content, sessionId}` 返却
+   4. 初期セッション解決用 `/api/chat/{room}/init` エンドポイント追加（`listActiveSessions` 経由）
 
-同時に dead code の `isSupabaseConfigured` ガードを削除（env 必須前提）。
+### 2026-04-22 完了コミット一覧
+
+| Commit | 内容 |
+|---|---|
+| `88f393b` | Phase 1: 5 API routes → new supabase helper（gold-price, materials, knowledge, knowledge/upload, orders） |
+| `06777da` | env 変数名統一 (`GEMINI_API_KEY` → `GOOGLE_GENERATIVE_AI_API_KEY`) + `knowledge_base.is_active` フィルタ削除 + `/api/materials` 空配列スタブ化 |
+| `08f8ede` | `/api/gold-price` 解決ステータスを HANDOFF に反映 |
+| `c2324a6` | Phase 2: `/api/settings` → `mekki_shared.app_settings`（`getSetting`/`setSetting` 経由） |
+| `42778e1` | `/api/cron/update-gold-price` 追加（15 分スケジュール）+ `mekki_room1.gold_prices` へ append、`/api/gold-price` は cache-first に再編。共有 helper `src/lib/gold-price.ts` を追加 |
 
 ---
 
