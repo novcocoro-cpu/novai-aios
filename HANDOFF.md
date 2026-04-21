@@ -31,8 +31,13 @@ Phase 3（`/api/chat/{strategy,sales,tech}` 書き直し）は **Steps 2〜4 す
 3. クライアント init: `GET /api/conversations?room=X` → 最新 session を選び `GET /api/conversations/{id}/messages` で履歴復元（2段 fetch）
 
 ### 検証済み
-- curl で 3ルート HTTP 200 + UUID conversationId 発行を確認
-- Supabase SQL で 1セッションに `user/assistant/user/assistant` の4行が正順保存、`message_count` トリガー同期を確認
+- **curl**: 3ルートとも HTTP 200 + UUID conversationId 発行を確認
+- **Supabase SQL**: 1セッションに `user/assistant/user/assistant` の4行が正順保存、`message_count` トリガー同期を確認
+- **ブラウザ UI**（2026-04-22 ユーザー実施）: Room 1/2/3 いずれも文字入力 → 送信 → AI応答 → リロード後履歴復元まで完全動作
+- **DB 実測（5セッション / 19メッセージ）**:
+  - Room 1 (strategy): 3 sessions, 11 messages
+  - Room 2 (sales): 1 session, 4 messages
+  - Room 3 (tech): 1 session, 4 messages
 - `conversation-store.ts` への参照は全消滅、typecheck は Phase 3 起因エラーゼロ
 
 ### 既知ギャップ（Phase 3 対象外、次の作業で対応）
@@ -50,16 +55,38 @@ Phase 3（`/api/chat/{strategy,sales,tech}` 書き直し）は **Steps 2〜4 す
    - HANDOFF §11 で「運用開始後でOK」指定の低優先
    - `pipeline.ts` 側で summary を systemPrompt に織り込む配線は完了済み。メッセージ件数閾値超過時に light Gemini を呼び `chat_sessions.summary` を更新する処理のみ未着手
 
+4. **`chat_sessions.total_tokens` / `chat_messages.metadata.token_count` が全て 0**（新規発見、2026-04-22）
+   - 現状: DB の 19 メッセージすべて `total_tokens = 0`、メッセージ metadata にも token_count なし
+   - 原因: `runChatTurn` が `saveMessage(..., { modelUsed })` だけ渡し、`tokenCount` を未指定。そもそも `callClaude` / `callGeminiWithSearch` の返り値が文字列のみで `usage` を返さない
+   - 影響: 料金監視・使用量可視化・ユーザー単位の上限管理が機能しない。運用開始後にコスト爆発を検知できない
+   - 対応: `callClaude` / `callGeminiWithSearch` の返り値を `{ text, usage: { input_tokens, output_tokens } }` に拡張 → `runChatTurn` が user/assistant 各 `saveMessage` に `tokenCount` を渡す → DB トリガーで `chat_sessions.total_tokens` に集計（既存トリガーがあるか要確認、無ければ migration 追加）
+
 ### 次回着手候補と優先順（クロコ推奨）
 
-1. **[最優先] `company-context.ts` を `mekki_shared` 経由に移行** — 小粒・独立・効果絶大。チャットの「会社を理解した回答」が即復活
-2. **[小作業] gold-price 型エラー解消** — 5分、tsc クリーン化
-3. **[本番確認] Vercel デプロイ** — `.env` を Vercel に設定 → push で自動配備 → 本番疎通
-4. **[要UI判断] `/api/materials` 再設計** — 下記 "2026-04-22 中断時点の既知問題" の 3 案 A/B/C からユーザー判断待ち
-5. **[中規模] Room 2/3 成果物（§6 §7）** — `proposals`, `talk_scripts`, `suppliers`, `supplier_comparisons` など CRUD helper + API Route
-6. **[大物] §8 共通機能** — §8-1 ファイルアップロード、§8-2 カスタムタグ、§8-3 ナレッジ格上げ
-7. **[要バックエンド先行] §9 ダッシュボード** — `activity_logs` / `metrics_cache` の集計表示。§8 完了後
-8. **[運用後] §4-4 要約処理 `maybeTriggerSummarization`** — 運用開始で履歴が伸びてから
+**[最優先] Vercel デプロイ（所要 1 時間）** — ブラウザ動作確認が取れた今が絶好のタイミング。Vercel の Environment Variables に `.env.local` 8 項目を設定 → `master` への push は自動配備なので本コミットで既に配備キューに乗っている可能性あり。要確認事項は以下：
+  - Vercel プロジェクト `novai-metal-os` の Environment Variables に全 8 項目入っているか
+  - Cron の `Authorization: Bearer $CRON_SECRET` が production で通るか（archive-sessions / update-gold-price）
+  - `vercel.json` の schedule が有効化されているか
+  - 本番 URL https://novai-metal-os.vercel.app/ で Room 1/2/3 の送信が通るか
+
+その後の優先順：
+
+1. **[高] `company-context.ts` を `mekki_shared` 経由に移行** — 小粒・独立・効果絶大。AI に会社情報13キー + ナレッジベースが届き、田中メッキ工業の文脈に沿った回答になる
+2. **[小作業] gold-price 型エラー解消** — 5 分、tsc クリーン化
+3. **[要UI判断] `/api/materials` 再設計** — 本文書 "2026-04-22 中断時点の既知問題" の 3 案 A/B/C からユーザー判断待ち
+4. **[中規模] §6 Room 2 成果物** — `proposals` / `talk_scripts` / `bundle_strategies` の CRUD helper + API Route
+5. **[中規模] §7 Room 3 成果物** — `suppliers` / `supplier_comparisons` / `technical_research` の CRUD helper + API Route
+6. **[大物] §8 共通機能** — §8-1 ファイルアップロード（Storage + `uploaded_files` + PDF/Word/Excel/CSV 抽出）、§8-2 カスタムタグ、§8-3 ナレッジベース + チャットからの格上げ
+7. **[コスト監視] token_count 記録の実装**（既知ギャップ #4 対応） — 運用開始前に必須化推奨
+8. **[要バックエンド先行] §9 ダッシュボード** — §6/§7/§8 の成果物 + `activity_logs` 集計。§8 完了後
+9. **[運用後] §4-4 要約処理 `maybeTriggerSummarization`** — 運用開始で履歴が伸びてから
+
+**クロコ視点での推奨次着手: Vercel デプロイ（上記最優先項目）**。理由:
+- ブラウザで動く状態のスナップショット（`a1cbf49`）が取れた直後は、本番にも同じ状態を載せる最適なタイミング
+- 本番で動けば Phase 3 の価値が外部確認でき、以降の機能追加のベースラインになる
+- 本番で何か壊れる場合（env 不足、cron auth、ビルドエラー）は今のうちに検知するのが最も安い
+- 所要 1 時間は他候補（company-context 移行を除く）より圧倒的に短い
+- デプロイ後の company-context 移行は独立タスクとして即座に着手できる
 
 ---
 
