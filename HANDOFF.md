@@ -4,7 +4,66 @@
 
 ---
 
-## ⚠️ 2026-04-22 緊急中断メモ（デモ対応のため一時停止）
+## ✅ Phase 3 完了（2026-04-22）— チャット3ルートを新 helper pipeline に集約
+
+Phase 3（`/api/chat/{strategy,sales,tech}` 書き直し）は **Steps 2〜4 すべて完了**。
+
+### 完了コミット
+
+| Commit | Step | 内容 |
+|---|---|---|
+| `74eda22` | Step 2 | `useChat` の POST body を `{content, conversationId}` に変更（判断1-B） |
+| `f71e56a` | Step 3 | chat 3ルートを `src/lib/chat/pipeline.ts` の `runChatTurn` に集約（案β採用）、旧 `saveConversation` / `supabaseSchema("shared"\|"room1"\|"room2"\|"room3")` から離脱 |
+| `dc93f06` | Step 4 | sessions と messages を別エンドポイントに分離（判断2-B）。`/api/conversations` はメタのみ、`/api/conversations/[id]/messages` を新設。`conversation-store.ts` を物理削除 |
+
+### 実装された新フロー（strategy/sales/tech 共通）
+
+1. クライアント: `useChat` が `POST /api/chat/{room}` に `{ content, conversationId }` を送信
+2. サーバ `runChatTurn`:
+   - `getSetting()` で `prompt_*`/`model_*`/`temperature` を取得（Phase 2 統一パス）
+   - `conversationId` が null なら `createSession(DEFAULT_USER_ID, room, title)` で暗黙作成（判断3-A）
+   - `saveMessage(sessionId, "user", content)` で DB 保存
+   - `getContextForAI(sessionId)` で summary + 直近20件（スライディングウィンドウ）を取得
+   - summary があれば systemPrompt 先頭に「【これまでの経緯の要約】」として織り込み
+   - model プレフィックス（`claude-*` / `gemini-*`）で `callClaude` / `callGeminiWithSearch` に分岐
+   - `saveMessage(sessionId, "assistant", answer, { modelUsed })` で保存
+   - `{ content, conversationId }` を返却
+3. クライアント init: `GET /api/conversations?room=X` → 最新 session を選び `GET /api/conversations/{id}/messages` で履歴復元（2段 fetch）
+
+### 検証済み
+- curl で 3ルート HTTP 200 + UUID conversationId 発行を確認
+- Supabase SQL で 1セッションに `user/assistant/user/assistant` の4行が正順保存、`message_count` トリガー同期を確認
+- `conversation-store.ts` への参照は全消滅、typecheck は Phase 3 起因エラーゼロ
+
+### 既知ギャップ（Phase 3 対象外、次の作業で対応）
+
+1. **`src/lib/company-context.ts` が旧スキーマ依存（最優先で対応推奨）**
+   - 現状: `supabaseSchema("shared").from("settings"|"knowledge_base")` を参照。`shared` スキーマはDB未存在のため try/catch で**空文字**を返している
+   - 影響: Phase 3 でチャットは動くが、AI に**田中メッキ工業の会社情報（月間金使用量・主力製品・目標利益率等13キー）とナレッジベースが一切渡らない**。汎用回答しか返らない
+   - 対応: `createServerClient("mekki_shared")` 経由に書換。会社13キーの所在（`app_settings` か別テーブルか）をまず `mekki_shared` のテーブル一覧で確認してから実装
+
+2. **`gold-price` 系 typecheck エラー 2件**（commit `42778e1` 由来）
+   - `src/app/api/gold-price/route.ts:19` と `src/app/api/cron/update-gold-price/route.ts:17` で `{ fetched_at: string }` 型に対し `row.updated_at` を参照
+   - 実行時は動作しているが `tsc --noEmit` に残る。`src/lib/gold-price.ts` の返り値型を `updated_at` に揃えれば解消（5分作業）
+
+3. **§4-4 `maybeTriggerSummarization` 未実装**
+   - HANDOFF §11 で「運用開始後でOK」指定の低優先
+   - `pipeline.ts` 側で summary を systemPrompt に織り込む配線は完了済み。メッセージ件数閾値超過時に light Gemini を呼び `chat_sessions.summary` を更新する処理のみ未着手
+
+### 次回着手候補と優先順（クロコ推奨）
+
+1. **[最優先] `company-context.ts` を `mekki_shared` 経由に移行** — 小粒・独立・効果絶大。チャットの「会社を理解した回答」が即復活
+2. **[小作業] gold-price 型エラー解消** — 5分、tsc クリーン化
+3. **[本番確認] Vercel デプロイ** — `.env` を Vercel に設定 → push で自動配備 → 本番疎通
+4. **[要UI判断] `/api/materials` 再設計** — 下記 "2026-04-22 中断時点の既知問題" の 3 案 A/B/C からユーザー判断待ち
+5. **[中規模] Room 2/3 成果物（§6 §7）** — `proposals`, `talk_scripts`, `suppliers`, `supplier_comparisons` など CRUD helper + API Route
+6. **[大物] §8 共通機能** — §8-1 ファイルアップロード、§8-2 カスタムタグ、§8-3 ナレッジ格上げ
+7. **[要バックエンド先行] §9 ダッシュボード** — `activity_logs` / `metrics_cache` の集計表示。§8 完了後
+8. **[運用後] §4-4 要約処理 `maybeTriggerSummarization`** — 運用開始で履歴が伸びてから
+
+---
+
+## 📝 2026-04-22 中断時点の既知問題（経緯保存）
 
 ユーザー本日クライアント訪問のため一時中断、移動後に再開。新 PC 側では以下まで進行済み。
 
@@ -43,17 +102,11 @@
    - `mekki_shared.app_settings` 経由で動作確認済み（POST で temperature 書換 → GET で反映を確認）
    - 旧 `isSupabaseConfigured` 分岐と `DEFAULT_PROMPTS` 書換は dead code として削除
 
-4. **Phase 3 (chat 3 本: strategy/sales/tech) 未着手**
-   - 着手前に UI 設計確認必須：session_id のフロント ↔ API 授受方法、UI 修正範囲
-   - 現状 AI 呼び出しは全メッセージ履歴送信（料金爆発リスク）→ `getContextForAI()` 必須化が目的
-
-   **既存コード調査結果**: `src/hooks/useChat.ts` は既に `conversationId` を保持・伝達する実装。初期化時に `/api/conversations?room={room}` から最新会話取得、各 POST で `{ messages, conversationId }` 送信、レスポンスの `conversationId` で更新。Phase 3 ではこの仕組みを活かせる。
-
-   **次回着手時の推奨順序**:
-   1. `/api/conversations/route.ts` の実装を読み、`conversationId` が `mekki_shared.chat_sessions.id` を指しているか、独自 ID かを確認
-   2. `useChat` の POST body を `{ content, sessionId }` に変更（履歴は UI 表示用のみ保持、サーバー送信は停止）
-   3. `/api/chat/strategy|sales|tech` を書き直し: `createSession`（無ければ）→ `saveMessage(user)` → `getContextForAI(sessionId)` → AI 呼び出し → `saveMessage(assistant)` → `{content, sessionId}` 返却
-   4. 初期セッション解決用 `/api/chat/{room}/init` エンドポイント追加（`listActiveSessions` 経由）
+4. ~~**Phase 3 (chat 3 本: strategy/sales/tech) 未着手**~~ **完了（2026-04-22）**
+   - 詳細は本文書冒頭「✅ Phase 3 完了（2026-04-22）」セクション参照
+   - 判断 1-B / 2-B / 3-A を採用、3 Step（Step 2 useChat / Step 3 pipeline / Step 4 sessions/messages 分離）で完遂
+   - 実装コミット: `74eda22`, `f71e56a`, `dc93f06`
+   - `conversation-store.ts` は物理削除済み。旧 `supabaseSchema("room1\|room2\|room3")` 系統は chat 経路から完全離脱
 
 ### 2026-04-22 完了コミット一覧
 
@@ -64,6 +117,10 @@
 | `08f8ede` | `/api/gold-price` 解決ステータスを HANDOFF に反映 |
 | `c2324a6` | Phase 2: `/api/settings` → `mekki_shared.app_settings`（`getSetting`/`setSetting` 経由） |
 | `42778e1` | `/api/cron/update-gold-price` 追加（15 分スケジュール）+ `mekki_room1.gold_prices` へ append、`/api/gold-price` は cache-first に再編。共有 helper `src/lib/gold-price.ts` を追加 |
+| `70c92cc` | HANDOFF 更新（Phase 2 完了反映 / gold-price cron / materials 再設計 3 案） |
+| `74eda22` | Phase 3 Step 2: `useChat` POST body を `{content, conversationId}` に変更 |
+| `f71e56a` | Phase 3 Step 3: chat 3ルートを `runChatTurn` pipeline に集約、旧 `saveConversation` 離脱 |
+| `dc93f06` | Phase 3 Step 4: sessions/messages 別エンドポイント化、`conversation-store.ts` 物理削除 |
 
 ---
 
@@ -102,6 +159,13 @@
   - `src/lib/settings.ts` — `getSetting<T>` / `setSetting`（`app_settings` テーブル、`user_id, setting_key` unique）
   - `src/lib/prompts.ts` — `getActivePrompt(roomNumber)`（`prompt_templates` から is_active=true を取得）
   - `src/lib/activity.ts` — `logActivity(input)` → `mekki_dashboard.activity_logs`
+- **Phase 3 チャットパイプライン（2026-04-22 完了）**
+  - `src/lib/chat/pipeline.ts` — `runChatTurn(input)` で設定取得〜session確保〜saveMessage〜getContextForAI〜AI呼び出し〜assistant保存を一箇所に集約
+  - `src/app/api/chat/{strategy,sales,tech}/route.ts` — `runChatTurn` を呼び出すのみの薄いラッパ（各 30 行以内）
+  - `src/app/api/conversations/route.ts` — `chat_sessions` のメタ一覧のみ返却（messages を含まない）
+  - `src/app/api/conversations/[id]/messages/route.ts` — 新規、`chat_messages` を created_at 昇順で返却
+  - `src/hooks/useChat.ts` — POST body `{content, conversationId}` + 初期化 2 段 fetch
+  - `src/lib/conversation-store.ts` — **削除済み**（旧系統は chat 経路から完全離脱）
 - **環境整備**
   - `.env.local` 作成、非機密値（URL / DEFAULT_USER_ID / DEFAULT_COMPANY_ID）記入済み。機密 3 値は空欄
   - `.env.local.example` 作成（値全て空のテンプレ）
@@ -111,10 +175,14 @@
 
 ### ⏳ 未着手
 
-- **旧 API Route 10 本の書き直し**（最重要）
-  - 対象：`src/app/api/{chat/{strategy,sales,tech},conversations,generate/proposal,gold-price,knowledge,knowledge/upload,materials,orders,settings,upload}/route.ts`
-  - 現状：全て `@/lib/supabase-server` の `supabaseSchema("shared")` を呼んでいるが、旧スキーマ（`shared`/`room1` 等）は DB に存在せず実行時 500。TypeScript はコンパイルだけ通る。
-  - 新 helper（`@/lib/supabase/server`, `@/lib/chat/*`）経由に置換する必要あり。ユーザーの方針決定（Section 3）を受けてから着手。
+- **旧 API Route 書き直しの残り 2 本**
+  - `src/app/api/generate/proposal/route.ts` — 提案書生成。旧 `supabaseSchema("shared")` 依存の可能性大、未調査
+  - `src/app/api/upload/route.ts` — ファイルアップロード。§8-1 の一部、Storage バケット作成も必要
+  - ※ Phase 1〜3 で完了した 9 本: gold-price, knowledge, knowledge/upload, materials, orders, settings, chat/strategy, chat/sales, chat/tech, conversations
+- **`src/lib/company-context.ts` を `mekki_shared` 経由に移行**（最優先、Phase 3 既知ギャップ #1）
+  - 現状 `supabaseSchema("shared")` 依存で try/catch が空文字を返す
+  - 会社情報 13 キー（`company_name` 等）と `knowledge_base` の新所在を `mekki_shared` で確認してから書き換え
+  - これをやらないと AI が会社情報を認識しないまま動く
 - **§4-4 要約処理** `maybeTriggerSummarization`
   - 指示書 §11 優先度で「運用が始まってからでOK」と最低順位
   - Gemini light model 呼び出しが必要。Section 3 の方針決定後、実装判断。
