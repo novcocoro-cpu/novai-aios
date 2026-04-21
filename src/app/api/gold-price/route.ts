@@ -1,10 +1,9 @@
-import { supabaseSchema, isSupabaseConfigured } from "@/lib/supabase-server";
+import { createServerClient } from "@/lib/supabase/server";
 import { jsonResponse } from "@/lib/api-response";
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 const FALLBACK_PRICE = 14820;
 
-// メモリキャッシュ（Supabase未接続時）
 let cachedPrice = FALLBACK_PRICE;
 let cachedAt: string | null = null;
 
@@ -42,11 +41,9 @@ async function fetchGoldPriceFromGemini(): Promise<number | null> {
       ?.map((p: { text: string }) => p.text)
       ?.join("") || "";
 
-    // 数字を抽出（カンマ除去）
     const match = text.replace(/,/g, "").match(/(\d{4,6})/);
     if (match) {
       const price = parseInt(match[1], 10);
-      // 妥当性チェック: 3000〜50000円/g の範囲
       if (price >= 3000 && price <= 50000) {
         return price;
       }
@@ -59,17 +56,14 @@ async function fetchGoldPriceFromGemini(): Promise<number | null> {
 
 export async function GET() {
   try {
-    // Geminiで最新価格を取得
     const freshPrice = await fetchGoldPriceFromGemini();
     const now = new Date().toISOString();
+    const supabase = createServerClient("mekki_room1");
 
     if (freshPrice) {
-      // Supabaseに保存
-      if (isSupabaseConfigured) {
-        await supabaseSchema("room1")
-          .from("market_data")
-          .upsert({ key: "gold_price_jpy", value: freshPrice, source: "gemini", updated_at: now });
-      }
+      await supabase
+        .from("market_data")
+        .upsert({ key: "gold_price_jpy", value: freshPrice, source: "gemini", updated_at: now });
       cachedPrice = freshPrice;
       cachedAt = now;
 
@@ -80,24 +74,20 @@ export async function GET() {
       });
     }
 
-    // 取得失敗 → Supabaseから最後の値を取得
-    if (isSupabaseConfigured) {
-      const { data } = await supabaseSchema("room1")
-        .from("market_data")
-        .select("value, updated_at")
-        .eq("key", "gold_price_jpy")
-        .single();
+    const { data } = await supabase
+      .from("market_data")
+      .select("value, updated_at")
+      .eq("key", "gold_price_jpy")
+      .single();
 
-      if (data) {
-        return jsonResponse({
-          price: Number(data.value),
-          updated_at: data.updated_at,
-          source: "cache",
-        });
-      }
+    if (data) {
+      return jsonResponse({
+        price: Number(data.value),
+        updated_at: data.updated_at,
+        source: "cache",
+      });
     }
 
-    // フォールバック
     return jsonResponse({
       price: cachedPrice,
       updated_at: cachedAt,

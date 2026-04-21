@@ -1,4 +1,4 @@
-import { supabaseSchema, isSupabaseConfigured } from "@/lib/supabase-server";
+import { createServerClient } from "@/lib/supabase/server";
 import { jsonResponse } from "@/lib/api-response";
 
 const FALLBACK_ORDERS = [
@@ -9,12 +9,9 @@ const FALLBACK_ORDERS = [
 ];
 
 export async function GET() {
-  if (!isSupabaseConfigured) {
-    return jsonResponse({ orders: FALLBACK_ORDERS });
-  }
-
   try {
-    const { data, error } = await supabaseSchema("dashboard")
+    const supabase = createServerClient("mekki_dashboard");
+    const { data, error } = await supabase
       .from("orders")
       .select("*")
       .order("created_at", { ascending: false });

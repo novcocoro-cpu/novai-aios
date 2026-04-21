@@ -1,10 +1,10 @@
 export const runtime = "nodejs";
 
-import { supabaseSchema, isSupabaseConfigured } from "@/lib/supabase-server";
+import { createServerClient } from "@/lib/supabase/server";
 import { jsonResponse } from "@/lib/api-response";
 
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
-const MAX_CONTENT_LENGTH = 50_000; // 50,000文字
+const MAX_FILE_SIZE = 10 * 1024 * 1024;
+const MAX_CONTENT_LENGTH = 50_000;
 
 async function extractText(buffer: Buffer, fileName: string): Promise<string> {
   const ext = fileName.toLowerCase().split(".").pop() || "";
@@ -24,7 +24,6 @@ async function extractText(buffer: Buffer, fileName: string): Promise<string> {
         const result = await parser.loadPDF(buffer);
         return result.getAllText();
       }
-      // フォールバック: モジュール構造が異なる場合
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const mod = await import("pdf-parse") as any;
       const fn = mod.default || mod;
@@ -47,7 +46,6 @@ async function extractText(buffer: Buffer, fileName: string): Promise<string> {
     }
 
     case "docx": {
-      // docxは簡易テキスト抽出（XMLからテキストノードを取得）
       const text = buffer.toString("utf-8");
       const matches = text.match(/<w:t[^>]*>([^<]*)<\/w:t>/g);
       if (matches) {
@@ -82,7 +80,6 @@ export async function POST(req: Request) {
 
     let content = await extractText(buffer, fileName);
 
-    // 文字数制限
     if (content.length > MAX_CONTENT_LENGTH) {
       console.warn(`[knowledge/upload] Content truncated: ${content.length} → ${MAX_CONTENT_LENGTH} chars`);
       content = content.slice(0, MAX_CONTENT_LENGTH) + "\n\n...（以下省略：文字数上限に達しました）";
@@ -91,23 +88,8 @@ export async function POST(req: Request) {
     const itemTitle = title || fileName.replace(/\.[^.]+$/, "");
     const fileType = fileName.toLowerCase().split(".").pop() || "";
 
-    if (!isSupabaseConfigured) {
-      const item = {
-        id: `mem_upload_${Date.now()}`,
-        category,
-        title: itemTitle,
-        content,
-        file_name: fileName,
-        file_type: fileType,
-        tags: [],
-        is_active: true,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      };
-      return jsonResponse({ item });
-    }
-
-    const { data, error } = await supabaseSchema("shared")
+    const supabase = createServerClient("mekki_shared");
+    const { data, error } = await supabase
       .from("knowledge_base")
       .insert({
         category,
