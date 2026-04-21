@@ -77,7 +77,7 @@ export function useChat(endpoint: string, room: string) {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            messages: updatedMessages.map((m) => ({ role: m.role, content: m.content })),
+            content: userMsg.content,
             conversationId: conversationIdRef.current,
           }),
         });
