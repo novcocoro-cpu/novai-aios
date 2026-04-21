@@ -1,51 +1,27 @@
 import { NextRequest } from "next/server";
-import { callClaude } from "@/lib/claude";
-import { callGeminiWithSearch } from "@/lib/gemini";
-import { supabaseSchema, isSupabaseConfigured } from "@/lib/supabase-server";
+import { runChatTurn } from "@/lib/chat/pipeline";
 import { DEFAULT_PROMPTS } from "@/lib/default-prompts";
-import { saveConversation } from "@/lib/conversation-store";
 import { jsonResponse } from "@/lib/api-response";
-import { getCompanyContextString } from "@/lib/company-context";
 
 export async function POST(req: NextRequest) {
   try {
-    const { messages, conversationId } = await req.json();
-
-    let systemPrompt = DEFAULT_PROMPTS.prompt_tech;
-    let temperature = 0.3;
-    let model = DEFAULT_PROMPTS.model_tech;
-    if (isSupabaseConfigured) {
-      const { data, error } = await supabaseSchema("shared").from("settings").select("key, value").in("key", ["prompt_tech", "temperature", "model_tech"]);
-      if (error) console.error("[tech] settings fetch failed:", error.message);
-      if (data) {
-        for (const row of data) {
-          if (row.key === "prompt_tech") systemPrompt = row.value;
-          if (row.key === "temperature") temperature = parseFloat(row.value);
-          if (row.key === "model_tech") model = row.value;
-        }
-      }
+    const { content, conversationId } = await req.json();
+    if (typeof content !== "string" || !content.trim()) {
+      return jsonResponse({ error: "content が空です" }, 400);
     }
 
-    const companyContext = await getCompanyContextString();
-    let content: string;
+    const result = await runChatTurn({
+      room: 3,
+      promptKey: "prompt_tech",
+      modelKey: "model_tech",
+      defaultSystemPrompt: DEFAULT_PROMPTS.prompt_tech,
+      defaultModel: DEFAULT_PROMPTS.model_tech,
+      defaultTitle: "技術相談",
+      content: content.trim(),
+      conversationId: conversationId ?? null,
+    });
 
-    if (model === "claude-sonnet-4-6") {
-      const apiKey = process.env.ANTHROPIC_API_KEY || "";
-      if (!apiKey || apiKey === "YOUR_ANTHROPIC_API_KEY" || !apiKey.startsWith("sk-ant-")) {
-        return jsonResponse({
-          error: "APIキー未設定です。設定画面でANTHROPIC_API_KEYを入力するか、Geminiモデルに切り替えてください。",
-        }, 400);
-      }
-      content = await callClaude(systemPrompt + companyContext, messages, temperature);
-    } else {
-      content = await callGeminiWithSearch(systemPrompt + companyContext, messages, temperature);
-    }
-
-    const allMessages = [...messages, { role: "assistant", content, timestamp: new Date().toISOString() }];
-    const title = messages[0]?.content?.slice(0, 50) || "技術相談";
-    const savedId = await saveConversation("tech", conversationId, allMessages, title);
-
-    return jsonResponse({ content, conversationId: savedId });
+    return jsonResponse(result);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     console.error("[tech] error:", message);
