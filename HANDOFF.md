@@ -4,6 +4,57 @@
 
 ---
 
+## ⚠️ 2026-04-22 緊急中断メモ（デモ対応のため一時停止）
+
+ユーザー本日クライアント訪問のため一時中断、移動後に再開。新 PC 側では以下まで進行済み。
+
+### 動作している機能（デモ可能）
+
+| エンドポイント | HTTP | メモ |
+|---|---|---|
+| `/api/orders` | 200 | DB エラー時フォールバックデータ返却 |
+| `/api/knowledge` | 200 | 空配列（DB に行なし） |
+| `/api/materials` | 200 | **空配列スタブ**（下記 #2 参照） |
+| `/api/gold-price` | 200 | **fallback 値 ¥14,820**（下記 #1 参照） |
+| `/api/cron/archive-sessions` | 200 | `{"ok":true,"archived":0,"thresholdDays":90}` |
+| 画面 UI ナビゲーション全般 | — | Next.js dev 起動 (Turbopack, http://localhost:3000) |
+
+### 移動後に必ず対応する未解決事項
+
+1. **`/api/gold-price`**: Gemini googleSearch が動かず fallback 値返却。
+   - 原因候補: Gemini 2.5 + googleSearch の仕様 / リージョン制限 / billing 要件
+   - 環境変数名は `GOOGLE_GENERATIVE_AI_API_KEY` に統一済み（API キー自体は raw curl で疎通確認済み）
+   - 次の debug ステップ: ルート内で `console.log` を仕込み、`res.ok`・`data.candidates`・regex match を順に確認
+
+2. **`/api/materials`**: DB の `mekki_room1.alternative_materials` テーブルと UI が期待するカラムが完全に別設計。
+   - DB 実体: `id, user_id, session_id, material_name, properties, cost_comparison, use_cases, source_urls, ai_summary, notes, created_at, updated_at`
+   - UI 期待: `name, cost_reduction, is_recommended, sort_order`
+   - 参照箇所: `src/components/screens/Settings.tsx`, `src/components/panels/TechPanel.tsx`, `src/components/panels/StrategyPanel.tsx`
+   - 現状は GET で空配列返却のスタブ化
+   - 対応方針: UI 側を新 DB 設計に合わせて書き直す or DB 側に View を追加して UI 期待値にマップする
+
+3. **Phase 2 (settings 書き直し) 未着手**
+   - DB 調査結果: `mekki_shared.app_settings` のみ存在、列は `id, user_id, setting_key, setting_value, updated_at`
+   - 旧 `settings(key, value)` テーブルは存在しない
+   - 方針: 新 helper `getSetting/setSetting` に統一、旧構造サポートは削除
+
+4. **Phase 3 (chat 3 本: strategy/sales/tech) 未着手**
+   - 着手前に UI 設計確認必須：session_id のフロント ↔ API 授受方法、UI 修正範囲
+   - 現状 AI 呼び出しは全メッセージ履歴送信（料金爆発リスク）→ `getContextForAI()` 必須化が目的
+
+### Phase 1 で完了した内容（コミット `88f393b`）
+
+旧 `@/lib/supabase-server` の `supabaseSchema("shared|room1|dashboard")` を新 `@/lib/supabase/server` の `createServerClient("mekki_*")` に置換:
+- `src/app/api/gold-price/route.ts`
+- `src/app/api/materials/route.ts`
+- `src/app/api/knowledge/route.ts`
+- `src/app/api/knowledge/upload/route.ts`
+- `src/app/api/orders/route.ts`
+
+同時に dead code の `isSupabaseConfigured` ガードを削除（env 必須前提）。
+
+---
+
 ## Section 1: プロジェクト概要
 
 - **アプリ名**：NOVAI — 金属メッキ加工会社向け AI アシスタント

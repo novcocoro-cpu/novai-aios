@@ -10,7 +10,6 @@ export async function GET(req: NextRequest) {
     let query = supabase
       .from("knowledge_base")
       .select("*")
-      .eq("is_active", true)
       .order("created_at", { ascending: false });
 
     if (category && category !== "all") {
