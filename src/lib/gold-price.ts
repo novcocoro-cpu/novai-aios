@@ -50,7 +50,7 @@ export async function fetchGoldPriceFromGemini(): Promise<number | null> {
 export async function saveGoldPrice(
   price: number,
   source: string = "gemini",
-): Promise<{ fetched_at: string }> {
+): Promise<{ updated_at: string }> {
   const fetched_at = new Date().toISOString();
   const supabase = createServerClient("mekki_room1");
   const { error } = await supabase
@@ -60,7 +60,7 @@ export async function saveGoldPrice(
     console.error("[gold-price] insert failed:", error.message);
     throw new Error(error.message);
   }
-  return { fetched_at };
+  return { updated_at: fetched_at };
 }
 
 export async function readCachedGoldPrice(): Promise<{
