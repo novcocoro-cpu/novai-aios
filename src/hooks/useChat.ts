@@ -23,27 +23,35 @@ export function useChat(endpoint: string, room: string) {
   const conversationIdRef = useRef(conversationId);
   conversationIdRef.current = conversationId;
 
-  // Load latest conversation from Supabase on mount
+  // Load latest conversation from Supabase on mount (2段 fetch: sessions → messages)
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch(`/api/conversations?room=${room}`);
-        const data = await res.json();
-        if (!cancelled && data.conversations?.length > 0) {
-          const latest = data.conversations[0];
-          if (latest.messages?.length > 0) {
-            const restored: ChatMessage[] = latest.messages.map((m: { role: string; content: string; timestamp?: string }) => ({
-              role: m.role as "user" | "assistant",
-              content: m.content,
-              timestamp: m.timestamp
-                ? new Date(m.timestamp).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" })
-                : "--:--",
-            }));
-            setMessages(restored);
-            setConversationId(latest.id);
-          }
-        }
+        const sessRes = await fetch(`/api/conversations?room=${room}`);
+        const sessData = await sessRes.json();
+        if (cancelled) return;
+        const sessions: Array<{ id: string }> = sessData.conversations ?? [];
+        if (sessions.length === 0) return;
+
+        const latest = sessions[0];
+        setConversationId(latest.id);
+
+        const msgRes = await fetch(`/api/conversations/${latest.id}/messages`);
+        const msgData = await msgRes.json();
+        if (cancelled) return;
+        const msgs: Array<{ role: string; content: string; created_at?: string }> =
+          msgData.messages ?? [];
+        if (msgs.length === 0) return;
+
+        const restored: ChatMessage[] = msgs.map((m) => ({
+          role: m.role as "user" | "assistant",
+          content: m.content,
+          timestamp: m.created_at
+            ? new Date(m.created_at).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" })
+            : "--:--",
+        }));
+        setMessages(restored);
       } catch {
         // Supabase not available, start fresh
       } finally {
