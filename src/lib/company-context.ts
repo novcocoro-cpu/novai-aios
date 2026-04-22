@@ -1,6 +1,6 @@
 // 会社情報 + ナレッジベースをシステムプロンプトに組み込むヘルパー
 
-import { supabaseSchema, isSupabaseConfigured } from "./supabase-server";
+import { createServerClient } from "./supabase/server";
 
 const COMPANY_KEYS = [
   "company_name",
@@ -22,7 +22,7 @@ const COMPANY_KEYS = [
 let companyCache: Record<string, string> | null = null;
 let companyCacheTime = 0;
 
-interface KBItem { title: string; content: string; category: string }
+interface KBItem { title: string; content: string; category: string | null }
 let kbCache: KBItem[] | null = null;
 let kbCacheTime = 0;
 
@@ -49,29 +49,24 @@ export async function loadCompanyData(): Promise<Record<string, string>> {
 
   const data: Record<string, string> = {};
 
-  if (!isSupabaseConfigured) {
-    companyCacheTime = now;
-    companyCache = data;
-    return data;
-  }
-
   try {
-    const { data: rows, error } = await supabaseSchema("shared")
-      .from("settings")
-      .select("key, value")
-      .in("key", [...COMPANY_KEYS]);
+    const supabase = createServerClient("mekki_shared");
+    const { data: rows, error } = await supabase
+      .from("app_settings")
+      .select("setting_key, setting_value")
+      .eq("user_id", process.env.DEFAULT_USER_ID!)
+      .in("setting_key", [...COMPANY_KEYS]);
 
     if (error) {
       console.error("[company-context] fetch failed:", error.message);
       return data;
     }
 
-    if (rows) {
-      for (const row of rows) {
-        if (row.value && row.value.trim()) {
-          data[row.key] = row.value;
-        }
-      }
+    for (const row of rows ?? []) {
+      const raw = row.setting_value;
+      if (raw === null || raw === undefined) continue;
+      const s = String(raw).trim();
+      if (s) data[row.setting_key] = s;
     }
 
     companyCache = data;
@@ -114,17 +109,11 @@ async function loadKnowledgeBase(): Promise<KBItem[]> {
   const now = Date.now();
   if (kbCache && now - kbCacheTime < CACHE_TTL) return kbCache;
 
-  if (!isSupabaseConfigured) {
-    kbCacheTime = now;
-    kbCache = [];
-    return [];
-  }
-
   try {
-    const { data, error } = await supabaseSchema("shared")
+    const supabase = createServerClient("mekki_shared");
+    const { data, error } = await supabase
       .from("knowledge_base")
       .select("title, content, category")
-      .eq("is_active", true)
       .order("created_at", { ascending: false });
 
     if (error) {
@@ -132,7 +121,7 @@ async function loadKnowledgeBase(): Promise<KBItem[]> {
       return kbCache || [];
     }
 
-    const result = data || [];
+    const result = (data || []) as KBItem[];
     kbCache = result;
     kbCacheTime = now;
     return result;
@@ -144,7 +133,6 @@ async function loadKnowledgeBase(): Promise<KBItem[]> {
 function buildKnowledgeContext(items: KBItem[]): string {
   if (items.length === 0) return "";
 
-  // カテゴリ別にグループ化
   const grouped: Record<string, KBItem[]> = {};
   for (const item of items) {
     const cat = item.category || "other";
