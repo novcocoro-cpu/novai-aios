@@ -1,3 +1,5 @@
+import type { LlmResult } from "./claude";
+
 const GEMINI_API_KEY = process.env.GOOGLE_GENERATIVE_AI_API_KEY!;
 const DEFAULT_MODEL = "gemini-2.5-flash";
 
@@ -6,7 +8,7 @@ async function callGeminiOnce(
   contents: { role: string; parts: { text: string }[] }[],
   temperature: number,
   model: string
-): Promise<string | null> {
+): Promise<LlmResult | null> {
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`,
     {
@@ -33,15 +35,23 @@ async function callGeminiOnce(
   const data = await res.json();
 
   if (!data.candidates?.[0]?.content?.parts) {
-    return null; // empty response
+    return null;
   }
 
   const textParts = data.candidates[0].content.parts
     .filter((p: { text?: string }) => p.text)
     .map((p: { text: string }) => p.text);
 
-  const result = textParts.join("\n");
-  return result || null;
+  const text = textParts.join("\n");
+  if (!text) return null;
+
+  return {
+    text,
+    usage: {
+      input_tokens: data.usageMetadata?.promptTokenCount ?? 0,
+      output_tokens: data.usageMetadata?.candidatesTokenCount ?? 0,
+    },
+  };
 }
 
 export async function callGeminiWithSearch(
@@ -49,17 +59,15 @@ export async function callGeminiWithSearch(
   messages: { role: string; content: string }[],
   temperature: number = 0.3,
   model: string = DEFAULT_MODEL
-): Promise<string> {
+): Promise<LlmResult> {
   const contents = messages.map((msg) => ({
     role: msg.role === "assistant" ? "model" : "user",
     parts: [{ text: msg.content }],
   }));
 
-  // First attempt
   const first = await callGeminiOnce(systemPrompt, contents, temperature, model);
   if (first) return first;
 
-  // Retry once on empty response
   console.warn("[gemini] Empty response, retrying once...");
   const second = await callGeminiOnce(systemPrompt, contents, temperature, model);
   if (second) return second;

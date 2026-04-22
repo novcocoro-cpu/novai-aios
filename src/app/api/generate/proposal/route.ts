@@ -39,9 +39,9 @@ export async function POST(req: NextRequest) {
           error: "APIキー未設定です。設定画面でANTHROPIC_API_KEYを入力するか、Geminiモデルに切り替えてください。",
         }, 400);
       }
-      content = await callClaude(systemPrompt, msgs, 0.3);
+      content = (await callClaude(systemPrompt, msgs, 0.3)).text;
     } else {
-      content = await callGeminiWithSearch(systemPrompt, msgs, 0.3);
+      content = (await callGeminiWithSearch(systemPrompt, msgs, 0.3)).text;
     }
 
     if (isSupabaseConfigured) {

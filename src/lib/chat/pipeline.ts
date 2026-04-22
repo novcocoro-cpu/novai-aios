@@ -2,7 +2,7 @@ import { createSession } from "./sessions";
 import { saveMessage } from "./messages";
 import { getContextForAI } from "./context";
 import { getSetting } from "../settings";
-import { callClaude } from "../claude";
+import { callClaude, type LlmResult } from "../claude";
 import { callGeminiWithSearch } from "../gemini";
 import { getCompanyContextString } from "../company-context";
 import type { Room } from "../supabase/types";
@@ -30,7 +30,7 @@ function callModel(
   systemPrompt: string,
   messages: Array<{ role: string; content: string }>,
   temperature: number,
-): Promise<string> {
+): Promise<LlmResult> {
   if (model.startsWith("claude")) {
     return callClaude(systemPrompt, messages, temperature);
   }
@@ -64,17 +64,27 @@ export async function runChatTurn(input: RunChatTurnInput): Promise<RunChatTurnO
     sessionId = session.id;
   }
 
-  await saveMessage(sessionId, "user", input.content);
-
-  const { summary, recentMessages } = await getContextForAI(sessionId);
+  const { summary, recentMessages: prior } = await getContextForAI(sessionId);
+  const recentMessages = [...prior, { role: "user", content: input.content }];
 
   const companyContext = await getCompanyContextString();
   const summaryBlock = summary ? `【これまでの経緯の要約】\n${summary}\n\n` : "";
   const fullSystemPrompt = summaryBlock + systemPromptRaw + companyContext;
 
-  const answer = await callModel(modelRaw, fullSystemPrompt, recentMessages, temperature);
+  const { text: answer, usage } = await callModel(
+    modelRaw,
+    fullSystemPrompt,
+    recentMessages,
+    temperature,
+  );
 
-  await saveMessage(sessionId, "assistant", answer, { modelUsed: modelRaw });
+  await saveMessage(sessionId, "user", input.content, {
+    tokenCount: usage.input_tokens,
+  });
+  await saveMessage(sessionId, "assistant", answer, {
+    modelUsed: modelRaw,
+    tokenCount: usage.output_tokens,
+  });
 
   return { content: answer, conversationId: sessionId };
 }

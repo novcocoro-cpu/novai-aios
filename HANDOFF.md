@@ -40,26 +40,25 @@ Phase 3（`/api/chat/{strategy,sales,tech}` 書き直し）は **Steps 2〜4 す
   - Room 3 (tech): 1 session, 4 messages
 - `conversation-store.ts` への参照は全消滅、typecheck は Phase 3 起因エラーゼロ
 
-### 既知ギャップ（Phase 3 対象外、次の作業で対応）
+### 既知ギャップ
 
-1. **`src/lib/company-context.ts` が旧スキーマ依存（最優先で対応推奨）**
-   - 現状: `supabaseSchema("shared").from("settings"|"knowledge_base")` を参照。`shared` スキーマはDB未存在のため try/catch で**空文字**を返している
-   - 影響: Phase 3 でチャットは動くが、AI に**田中メッキ工業の会社情報（月間金使用量・主力製品・目標利益率等13キー）とナレッジベースが一切渡らない**。汎用回答しか返らない
-   - 対応: `createServerClient("mekki_shared")` 経由に書換。会社13キーの所在（`app_settings` か別テーブルか）をまず `mekki_shared` のテーブル一覧で確認してから実装
+1. ~~**`src/lib/company-context.ts` が旧スキーマ依存**~~ **解消済み（2026-04-22、commit `76a23df`）**
+   - `createServerClient("mekki_shared").from("app_settings")` に書換、`user_id = DEFAULT_USER_ID` で絞り込み
+   - 13 キーを seed データで `app_settings` に UPSERT 済み（暫定値。Settings UI から実値に差し替え可能）
+   - `src/components/screens/Settings.tsx` L343-357 は既に 13 キー入力フォームを保有
+   - 本番検証済: AI 応答に「300g」「装飾用金メッキ」「田中貴金属工業」等 seed 値が反映される
 
-2. **`gold-price` 系 typecheck エラー 2件**（commit `42778e1` 由来）
-   - `src/app/api/gold-price/route.ts:19` と `src/app/api/cron/update-gold-price/route.ts:17` で `{ fetched_at: string }` 型に対し `row.updated_at` を参照
-   - 実行時は動作しているが `tsc --noEmit` に残る。`src/lib/gold-price.ts` の返り値型を `updated_at` に揃えれば解消（5分作業）
+2. ~~**`gold-price` 系 typecheck エラー 2件**~~ **解消済み（2026-04-22、commit `ba19a79`）**
 
 3. **§4-4 `maybeTriggerSummarization` 未実装**
    - HANDOFF §11 で「運用開始後でOK」指定の低優先
    - `pipeline.ts` 側で summary を systemPrompt に織り込む配線は完了済み。メッセージ件数閾値超過時に light Gemini を呼び `chat_sessions.summary` を更新する処理のみ未着手
 
-4. **`chat_sessions.total_tokens` / `chat_messages.metadata.token_count` が全て 0**（新規発見、2026-04-22）
-   - 現状: DB の 19 メッセージすべて `total_tokens = 0`、メッセージ metadata にも token_count なし
-   - 原因: `runChatTurn` が `saveMessage(..., { modelUsed })` だけ渡し、`tokenCount` を未指定。そもそも `callClaude` / `callGeminiWithSearch` の返り値が文字列のみで `usage` を返さない
-   - 影響: 料金監視・使用量可視化・ユーザー単位の上限管理が機能しない。運用開始後にコスト爆発を検知できない
-   - 対応: `callClaude` / `callGeminiWithSearch` の返り値を `{ text, usage: { input_tokens, output_tokens } }` に拡張 → `runChatTurn` が user/assistant 各 `saveMessage` に `tokenCount` を渡す → DB トリガーで `chat_sessions.total_tokens` に集計（既存トリガーがあるか要確認、無ければ migration 追加）
+4. ~~**`chat_sessions.total_tokens` / `chat_messages.metadata.token_count` が全て 0**~~ **解消済み（2026-04-22）**
+   - `callClaude` / `callGeminiWithSearch` を `Promise<{ text, usage }>` に拡張
+   - `runChatTurn` を再構成: `getContextForAI` → AI 呼び出し → user/assistant 両 message を **AI 呼び出し後にまとめて insert**（input_tokens/output_tokens を tokenCount に渡す）。AI エラー時に dangling user row が残らないバグ修正を兼ねる
+   - `chat_sessions.total_tokens` は既存の `update_session_message_count()` トリガーが INSERT 時に `NEW.metadata.token_count` を加算する実装を持っていたため、追加トリガー不要。mekki_13（重複トリガー追加）→ mekki_14（同トリガー削除）の履歴のみ残る
+   - 検証: 2 セッションで `total_tokens = user_tokens + assistant_tokens` の一致を確認
 
 ### 次回着手候補と優先順（クロコ推奨）
 

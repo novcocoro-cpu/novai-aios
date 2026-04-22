@@ -1,11 +1,21 @@
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
 const CLAUDE_MODEL = "claude-sonnet-4-6-20250514";
 
+export interface LlmUsage {
+  input_tokens: number;
+  output_tokens: number;
+}
+
+export interface LlmResult {
+  text: string;
+  usage: LlmUsage;
+}
+
 export async function callClaude(
   systemPrompt: string,
   messages: { role: string; content: string }[],
   temperature: number = 0.3
-): Promise<string> {
+): Promise<LlmResult> {
   if (!ANTHROPIC_API_KEY || ANTHROPIC_API_KEY === "YOUR_ANTHROPIC_API_KEY" || !ANTHROPIC_API_KEY.startsWith("sk-ant-")) {
     throw new Error(
       "ANTHROPIC_API_KEY が未設定です。.env.local に正しい API キーを設定してください。\n" +
@@ -43,5 +53,11 @@ export async function callClaude(
   }
 
   const data = await res.json();
-  return data.content[0].text;
+  return {
+    text: data.content[0].text,
+    usage: {
+      input_tokens: data.usage?.input_tokens ?? 0,
+      output_tokens: data.usage?.output_tokens ?? 0,
+    },
+  };
 }
